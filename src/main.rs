@@ -58,7 +58,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     pb.set_message("💻 Downloading");
     let prefix = Alphanumeric.sample_string(&mut rand::thread_rng(), 5);
-    let path = format!("./{}-{}.png", prefix, prompt.replace(" ", "-"));
+    let mut name = prompt.replace(" ", "-").replace(".", "");
+    name.truncate(60);
+    let path = format!("./{}-{}.png", prefix, name);
     let mut file = std::fs::File::create(&path)?;
     client.get(url).send()?.copy_to(&mut file)?;
 
