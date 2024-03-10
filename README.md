@@ -1,15 +1,24 @@
 # imgen
 
+![Example](./example.png)
+
 A cli wrapper around OpenAI imgage generation that works for me.
+Give multiple prompts and request them concurrently.
+
+Install
+
+```
+cargo install imgen
+```
 
 # Run
 
 ```
-cargo run --release -- "First prompt" "Second prompt"
+imgen "First prompt" "Second prompt"
 ```
 
 if a prompt is `.` is will reuse the previous prompt. So the create 3 variations run:
 
 ```
-cargo run --release -- "prompt" . .
+imgen "prompt" . .
 ```
