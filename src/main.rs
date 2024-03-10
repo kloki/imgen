@@ -1,11 +1,14 @@
+use futures::future::try_join_all;
+use indicatif::MultiProgress;
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::distributions::{Alphanumeric, DistString};
-use reqwest::blocking::Client;
-use reqwest::header;
 use reqwest::header::HeaderMap;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::time::Duration;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Entry {
@@ -36,53 +39,69 @@ impl ImgRequest<'_> {
     }
 }
 
-fn build_filename(prompt: &str) -> String {
-    let prefix = Alphanumeric.sample_string(&mut rand::thread_rng(), 5);
-    let mut name = prompt.replace(" ", "-").replace(".", "");
-    name.truncate(60);
-    format!("./{}-{}.png", prefix, name)
-}
-
-fn process_prompt(
+async fn process_prompt(
     client: Client,
+    headers: HeaderMap,
     prompt: String,
     pb: ProgressBar,
-    headers: HeaderMap,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut name = prompt.replace(" ", "-").replace(".", "");
+    name.truncate(60);
+    pb.set_message(format!("🤯 Generating: {}", name));
     let res = client
         .post("https://api.openai.com/v1/images/generations")
         .headers(headers)
         .json(&ImgRequest::new(&prompt))
-        .send()?;
-    let payload: Payload = res.json()?;
+        .send()
+        .await?;
+    let payload: Payload = res.json().await?;
     let url = &payload.data[0].url;
+    pb.set_message(format!("💻 Downloading: {}", name));
 
-    pb.set_message("💻 Downloading");
-    let path = build_filename(&prompt);
-    let mut file = std::fs::File::create(&path)?;
-    client.get(url).send()?.copy_to(&mut file)?;
+    let prefix = Alphanumeric.sample_string(&mut rand::thread_rng(), 5);
+    let path = format!("./{}-{}.png", prefix, name);
+    let mut res = client.get(url).send().await?;
+    let mut dest = File::create(path.clone()).await?;
 
-    pb.finish_with_message(format!(" 🎉 {}", path));
+    while let Some(chunk) = res.chunk().await? {
+        dest.write_all(&chunk).await?;
+    }
+    dest.flush().await?;
+
+    pb.finish_with_message(format!("• {}", path));
 
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let prompt: String = env::args().collect::<Vec<_>>()[1..].join(" ");
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let prompts: Vec<String> = env::args().collect::<Vec<_>>()[1..].to_vec();
     let key = env::var("OPENAI_API_KEY".to_string()).expect("OPENAI_API_KEY not set");
 
+    let m = MultiProgress::new();
     let sty = ProgressStyle::with_template("{spinner:.green} {msg}")?;
-
-    let pb = ProgressBar::new_spinner();
-    pb.enable_steady_tick(Duration::from_millis(120));
-    pb.set_style(sty);
-
-    pb.set_message("🤯 Generating");
-    let mut headers = header::HeaderMap::new();
+    let mut headers = HeaderMap::new();
     headers.insert("Content-Type", "application/json".parse()?);
     headers.insert("Authorization", ["Bearer ", &key].concat().parse()?);
-    let client = reqwest::blocking::Client::new();
-    process_prompt(client, prompt, pb, headers)?;
+    let client = reqwest::Client::builder().build()?;
+
+    let mut futures = Vec::new();
+    let mut current_prompt = "".to_string();
+    for prompt in prompts {
+        if prompt != "." {
+            current_prompt = prompt;
+        }
+        let pb = m.add(ProgressBar::new_spinner());
+        pb.enable_steady_tick(Duration::from_millis(120));
+        pb.set_style(sty.clone());
+        futures.push(process_prompt(
+            client.clone(),
+            headers.clone(),
+            current_prompt.clone(),
+            pb,
+        ))
+    }
+    try_join_all(futures).await?;
 
     Ok(())
 }
