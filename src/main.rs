@@ -40,7 +40,7 @@ impl ImgRequest<'_> {
 }
 
 async fn process_prompt(client: Client, headers: HeaderMap, prompt: String, pb: ProgressBar) {
-    let mut name = prompt.replace(" ", "-").replace(".", "");
+    let mut name = prompt.clone();
     name.truncate(60);
     pb.set_message(format!("[generating] {}", name));
     let res = match client
@@ -70,8 +70,13 @@ async fn process_prompt(client: Client, headers: HeaderMap, prompt: String, pb: 
     let url = &payload.data[0].url;
     pb.set_message(format!("[downloading] {}", name));
 
-    let prefix = Alphanumeric.sample_string(&mut rand::thread_rng(), 5);
-    let path = format!("./{}-{}.png", prefix, name);
+    let unique = Alphanumeric.sample_string(&mut rand::thread_rng(), 5);
+    name = name.replace(" ", "-");
+    name = name
+        .chars()
+        .filter(|x| x.is_alphanumeric() || *x == '-')
+        .collect::<String>();
+    let path = format!("./{}-{}.png", name, unique);
     let mut res = match client.get(url).send().await {
         Ok(s) => s,
         Err(e) => {
