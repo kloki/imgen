@@ -1,4 +1,4 @@
-use futures::future::try_join_all;
+use futures::future::join_all;
 use indicatif::MultiProgress;
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::distributions::{Alphanumeric, DistString};
@@ -39,38 +39,77 @@ impl ImgRequest<'_> {
     }
 }
 
-async fn process_prompt(
-    client: Client,
-    headers: HeaderMap,
-    prompt: String,
-    pb: ProgressBar,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn process_prompt(client: Client, headers: HeaderMap, prompt: String, pb: ProgressBar) {
     let mut name = prompt.replace(" ", "-").replace(".", "");
     name.truncate(60);
-    pb.set_message(format!("🤯 Generating: {}", name));
-    let res = client
+    pb.set_message(format!("[generating] {}", name));
+    let res = match client
         .post("https://api.openai.com/v1/images/generations")
         .headers(headers)
         .json(&ImgRequest::new(&prompt))
         .send()
-        .await?;
-    let payload: Payload = res.json().await?;
+        .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            pb.finish_with_message(format!("[error-gen] {}", e));
+            return;
+        }
+    };
+    if res.status() != 200 {
+        pb.finish_with_message(format!("[error-gen] {}", res.status()));
+        return;
+    }
+    let payload: Payload = match res.json().await {
+        Ok(s) => s,
+        Err(_) => {
+            pb.finish_with_message("[error-gen] failed to parse json");
+            return;
+        }
+    };
     let url = &payload.data[0].url;
-    pb.set_message(format!("💻 Downloading: {}", name));
+    pb.set_message(format!("[downloading] {}", name));
 
     let prefix = Alphanumeric.sample_string(&mut rand::thread_rng(), 5);
     let path = format!("./{}-{}.png", prefix, name);
-    let mut res = client.get(url).send().await?;
-    let mut dest = File::create(path.clone()).await?;
+    let mut res = match client.get(url).send().await {
+        Ok(s) => s,
+        Err(e) => {
+            pb.finish_with_message(format!("[error-down] {}", e));
+            return;
+        }
+    };
 
-    while let Some(chunk) = res.chunk().await? {
-        dest.write_all(&chunk).await?;
+    if res.status() != 200 {
+        pb.finish_with_message(format!("[error-down] status_code {}", res.status()));
+        return;
     }
-    dest.flush().await?;
+    let mut dest = match File::create(path.clone()).await {
+        Ok(s) => s,
+        Err(e) => {
+            pb.finish_with_message(format!("[error-down] {}", e));
+            return;
+        }
+    };
 
-    pb.finish_with_message(format!("• {}", path));
+    while let Some(chunk) = match res.chunk().await {
+        Ok(s) => s,
+        Err(e) => {
+            pb.finish_with_message(format!("[error-down] {}", e));
+            return;
+        }
+    } {
+        if let Err(e) = dest.write_all(&chunk).await {
+            pb.finish_with_message(format!("[error-down] {}", e));
+            return;
+        }
+    }
+    if let Err(e) = dest.flush().await {
+        pb.finish_with_message(format!("[error-down] {}", e));
+        return;
+    }
 
-    Ok(())
+    pb.finish_with_message(format!("[done] {}", path));
 }
 
 #[tokio::main]
@@ -101,7 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             pb,
         ))
     }
-    try_join_all(futures).await?;
+    join_all(futures).await;
 
     Ok(())
 }

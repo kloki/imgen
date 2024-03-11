@@ -1,7 +1,5 @@
 # imgen
 
-![Example](./example.png)
-
 A cli wrapper around OpenAI imgage generation that works for me.
 Give multiple prompts and request them concurrently.
 
