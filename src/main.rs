@@ -1,14 +1,11 @@
+use std::{env, time::Duration};
+
 use futures::future::join_all;
-use indicatif::MultiProgress;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rand::distributions::{Alphanumeric, DistString};
-use reqwest::header::HeaderMap;
-use reqwest::Client;
+use reqwest::{header::HeaderMap, Client};
 use serde::{Deserialize, Serialize};
-use std::env;
-use std::time::Duration;
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
+use tokio::{fs::File, io::AsyncWriteExt};
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Entry {
@@ -71,7 +68,7 @@ async fn process_prompt(client: Client, headers: HeaderMap, prompt: String, pb: 
     pb.set_message(format!("[downloading] {}", name));
 
     let unique = Alphanumeric.sample_string(&mut rand::thread_rng(), 5);
-    name = name.replace(" ", "-");
+    name = name.replace(' ', "-");
     name = name
         .chars()
         .filter(|x| x.is_alphanumeric() || *x == '-')
@@ -120,7 +117,7 @@ async fn process_prompt(client: Client, headers: HeaderMap, prompt: String, pb: 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let prompts: Vec<String> = env::args().collect::<Vec<_>>()[1..].to_vec();
-    let key = env::var("OPENAI_API_KEY".to_string()).expect("OPENAI_API_KEY not set");
+    let key = env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY not set");
 
     let m = MultiProgress::new();
     let sty = ProgressStyle::with_template("{spinner:.green} {msg}")?;
