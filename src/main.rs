@@ -36,80 +36,76 @@ impl ImgRequest<'_> {
     }
 }
 
-async fn process_prompt(client: Client, headers: HeaderMap, prompt: String, pb: ProgressBar) {
-    let mut name = prompt.clone();
+fn name_from_prompt(prompt: String) -> String {
+    let mut name = prompt;
     name.truncate(60);
-    pb.set_message(format!("[generating] {}", name));
-    let res = match client
-        .post("https://api.openai.com/v1/images/generations")
-        .headers(headers)
-        .json(&ImgRequest::new(&prompt))
-        .send()
-        .await
-    {
-        Ok(s) => s,
-        Err(e) => {
-            pb.finish_with_message(format!("[error-gen] {}", e));
-            return;
-        }
-    };
-    if res.status() != 200 {
-        pb.finish_with_message(format!("[error-gen] {}", res.status()));
-        return;
-    }
-    let payload: Payload = match res.json().await {
-        Ok(s) => s,
-        Err(_) => {
-            pb.finish_with_message("[error-gen] failed to parse json");
-            return;
-        }
-    };
-    let url = &payload.data[0].url;
-    pb.set_message(format!("[downloading] {}", name));
+    name
+}
 
+fn unique_path(name: String) -> String {
+    let mut name = name;
     let unique = Alphanumeric.sample_string(&mut rand::thread_rng(), 5);
     name = name.replace(' ', "-");
     name = name
         .chars()
         .filter(|x| x.is_alphanumeric() || *x == '-')
         .collect::<String>();
-    let path = format!("./{}-{}.png", name, unique);
-    let mut res = match client.get(url).send().await {
-        Ok(s) => s,
-        Err(e) => {
-            pb.finish_with_message(format!("[error-down] {}", e));
-            return;
-        }
-    };
+    format!("./{}-{}.png", name, unique)
+}
 
+async fn generate_image_url(
+    client: Client,
+    headers: HeaderMap,
+    prompt: &str,
+) -> Result<String, String> {
+    let res = client
+        .post("https://api.openai.com/v1/images/generations")
+        .headers(headers)
+        .json(&ImgRequest::new(prompt))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
     if res.status() != 200 {
-        pb.finish_with_message(format!("[error-down] status_code {}", res.status()));
-        return;
+        return Err(res.status().to_string());
     }
-    let mut dest = match File::create(path.clone()).await {
+    let payload: Payload = res.json().await.map_err(|e| e.to_string())?;
+    Ok(payload.data[0].url.clone())
+}
+
+async fn download_image(client: Client, url: String, path: String) -> Result<(), String> {
+    let mut res = client.get(url).send().await.map_err(|e| e.to_string())?;
+    if res.status() != 200 {
+        return Err(res.status().to_string());
+    }
+    let mut dest = File::create(path.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    while let Some(chunk) = res.chunk().await.map_err(|e| e.to_string())? {
+        dest.write_all(&chunk).await.map_err(|e| e.to_string())?;
+    }
+    dest.flush().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn process_prompt(client: Client, headers: HeaderMap, prompt: String, pb: ProgressBar) {
+    let name = name_from_prompt(prompt.clone());
+    pb.set_message(format!("[generating] {}", name));
+
+    let url = match generate_image_url(client.clone(), headers, &prompt).await {
         Ok(s) => s,
         Err(e) => {
-            pb.finish_with_message(format!("[error-down] {}", e));
+            pb.finish_with_message(format!("[error-gen] {}", e));
             return;
         }
     };
+    pb.set_message(format!("[downloading] {}", name));
+    let path = unique_path(name);
 
-    while let Some(chunk) = match res.chunk().await {
-        Ok(s) => s,
-        Err(e) => {
-            pb.finish_with_message(format!("[error-down] {}", e));
-            return;
-        }
-    } {
-        if let Err(e) = dest.write_all(&chunk).await {
-            pb.finish_with_message(format!("[error-down] {}", e));
-            return;
-        }
-    }
-    if let Err(e) = dest.flush().await {
+    if let Err(e) = download_image(client, url, path.clone()).await {
         pb.finish_with_message(format!("[error-down] {}", e));
         return;
-    }
+    };
 
     pb.finish_with_message(format!("[done] {}", path));
 }
